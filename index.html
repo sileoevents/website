@@ -1119,7 +1119,7 @@ function buildPath(){
     if (sk.fitBox){
       var fb = sk.fitBox;
       for (var j = 1; j < 64; j++){
-        var f = j/64, fe = feStd(f), fade = 1 - sstep(0.30, 0.80, f);
+        var f = j/64, fe = feStd(f), fade = 1 - sstep(0.10, 0.38, f); // the same rule as stopFade for the stop being left
         if (fade <= 0.02) break;
         camCurve.getPoint((k + fe)/(N - 1), fitV);
         if (fitV.x < fb.min.x - 2 || fitV.x > fb.max.x + 2 || fitV.z < fb.min.z - 2 || fitV.z > fb.max.z + 2) continue;
@@ -1171,7 +1171,7 @@ function setHallLights(stageOn, converge, warp, house){
 function updateHall(p, time){
   var hp = p / CROSS;
   var house = 1 - sstep(0, 0.30, hp), stageOn = sstep(0.10, 0.35, hp), converge = sstep(0.25, 0.45, hp), warp = sstep(0.74, 0.97, hp);
-  var uFl = sstep(0.80, 1.0, hp); // the light comes from the screen itself
+  var uFl = (glide && glide.cross && glide.dir < 0) ? 0 : sstep(0.80, 1.0, hp); // the light comes from the screen itself (only on the way in)
   setHallLights(stageOn, converge, warp, house);
   houseMat.color.setRGB(1*(0.02+house*0.9), 0.82*(0.02+house*0.9), 0.58*(0.02+house*0.9));
   lipMat.color.setRGB(stageOn, 0.76*stageOn, 0.48*stageOn);
@@ -1213,6 +1213,7 @@ function updateHall(p, time){
 }
 
 function scaleMat(m, k){ if (m.uniforms && m.uniforms.uAlpha) m.uniforms.uAlpha.value *= k; else m.opacity *= k; }
+function stopFade(s, i){ return s <= i ? 1 - sstep(0.30, 0.80, i - s) : 1 - sstep(0.10, 0.38, s - i); }
 function worldS(p){ return clamp((p - WORLD0)/(1 - WORLD0), 0, 1)*(N-1); }
 var dirTmp = V(0,0,0), fwdH = V(0,0,0), fwdLevel = V(0,0,-1);
 function updateWorld(p, time, dt){
@@ -1246,18 +1247,14 @@ function updateWorld(p, time, dt){
   camera.getWorldDirection(fwdH); fwdH.y = 0; fwdH.normalize();
   var narrowNow = innerWidth < 820;
   STOPS.forEach(function(st, i){
-    var dd = Math.abs(s - i), fade = 1 - sstep(0.30, 0.80, dd); // the next moment arrives early; neighbours are 0 at rest (|d| = 1)
-    if (st.fitBox && fade > 0.003){
-      fade *= sstep(1.0, 2.0, st.fitBox.distanceToPoint(camera.position)); // backstop only: the lift keeps the camera clear
-      // pass-over fade: as the camera cranes over a stop it sinks far below its resting viewing angle and dissolves, so the frame never fills with set seen from above; 1 at rest
-      tmp.copy(st.fitC).sub(camera.position); var hd = tmp.x*fwdH.x + tmp.z*fwdH.z, dep = hd > 0.01 ? Math.atan2(-tmp.y, hd)*57.29578 : 90, thI = st.th[narrowNow ? 1 : 0];
-      fade *= 1 - sstep(thI + 8, thI + 24, dep);
-    }
+    // ONE visibility rule per stop, by scroll position only, identical forward and back (no camera-angle or distance rules competing with it):
+    // ahead of the camera a stop arrives early (0.80 to 0.30); once the camera moves on toward the next stop, the route soon flies over it,
+    // so it dissolves together with its words and is gone by 0.38, long before the camera is anywhere near it
+    var dd = Math.abs(s - i), fade = stopFade(s, i);
     dbg.fade[i] = fade;
     if (st.g){
       applyFade(st.g, fade);
       if (fade > 0.003){
-        if (st.atmo){ var af = 1 - sstep(0.12, 0.28, dd); for (var a = 0; a < st.atmo.length; a++) scaleMat(st.atmo[a], af); } // confetti, beams and glow leave before the camera arrives
         if (st.glows) for (var gi = 0; gi < st.glows.length; gi++) scaleMat(st.glows[gi].m, sstep(4.0, 12.0, Math.abs(camera.position.z - st.glows[gi].z))); // never fly through a glow plane
         if (st.update) st.update(time, fade, dt);
       }
@@ -1317,8 +1314,11 @@ function stopY(k){ return stopP(k) * maxScroll(); }
 var TG = [0]; for (var tk=0; tk<N; tk++) TG.push(stopP(tk));
 var IS0 = 1; // one swipe from the seat to the first line: the hall has no stop of its own
 // the opening as one timed move: lights and beams take the first 38%, the push to the wall runs to 80%, the world settles in the rest
-var OPEN_D = 2.8, OPEN_BACK_D = 1.8;
+var OPEN_D = 2.8, OPEN_BACK_D = 1.1;
 function openC(u){ return openP(u)/WORLD0; } // scroll share at clock u
+// going back is a quick, even rewind: the camera's distance follows one smooth ease (no slow start from the soft approach), then the house lights come up as you land
+function openGInv(gv){ var lo = OPEN_UA, hi = 1; for (var n=0; n<30; n++){ var mid = (lo + hi)/2; if (openG(mid) < gv) lo = mid; else hi = mid; } return (lo + hi)/2; }
+function openBack(u0, t){ var g0 = openG(u0), T = 0.86; if (t < T) return Math.min(u0, openGInv(g0*(1 - sstep(0, 1, t/T)))); return Math.min(u0, OPEN_UA)*(1 - sstep(0, 1, (t - T)/(1 - T))); }
 function openInv(r){ var lo = 0, hi = 1; for (var n=0; n<30; n++){ var mid = (lo + hi)/2; if (openC(mid) < r) lo = mid; else hi = mid; } return (lo + hi)/2; }
 function tgY(i){ return TG[i]*maxScroll(); }
 function curY(){ return lenis ? lenis.animatedScroll : scrollY; }
@@ -1353,7 +1353,7 @@ function launch(to, vAlong, kind, done, from, origin){
   if (isCross){ // the opening plays as one piece, from wherever it is picked up
     var r0 = clamp(pa/WORLD0, 0, 1), u0 = openInv(r0); m0 = 0;
     if (to === IS0){ D = Math.max(0.8, OPEN_D*(1 - u0)); ease = function(u){ return r0 >= 1 ? 1 : (openC(u0 + (1 - u0)*u) - r0)/(1 - r0); }; }
-    else { D = Math.max(0.6, OPEN_BACK_D*u0); ease = function(u){ return r0 <= 0 ? 1 : (r0 - openC(u0*(1 - u)))/r0; }; }
+    else { D = Math.max(0.5, OPEN_BACK_D*u0); ease = function(t){ return r0 <= 0 ? 1 : (r0 - openC(openBack(u0, t)))/r0; }; }
   } else {
     D = isHero ? clamp(0.8 + 0.9*dist/seg, 0.8, 1.7) : clamp(0.6 + 0.7*dist/seg, 0.6, dist > 1.05*seg ? 2.0 : 1.3); // multi-stop moves may take up to 2 s
     if (kind === 'wheel' || kind === 'key') m0 = Math.min(0.8, m0max);
@@ -1404,20 +1404,39 @@ function inPrevent(ev, dy){ var path = ev.composedPath ? ev.composedPath() : [];
       if (dy === undefined) return el.scrollHeight > el.clientHeight + 1;
       return dy < 0 ? el.scrollTop > 0 : el.scrollTop + el.clientHeight < el.scrollHeight - 1; } }
   return false; }
+function formScroller(ev){ var path = ev.composedPath ? ev.composedPath() : []; for (var i=0; i<path.length; i++){ var el = path[i]; if (el === document.documentElement) break; if (el.hasAttribute && el.hasAttribute('data-lenis-prevent') && el.scrollHeight > el.clientHeight + 1) return el; } return null; }
 function onVS(e){
   var ev = e.event, type = ev.type;
-  if (ev.ctrlKey || inPrevent(ev, type === 'wheel' ? e.deltaY : undefined)) return true; // pinch zoom, and the contact form when it can scroll
   var now = performance.now();
+  if (ev.ctrlKey) return true; // pinch zoom
+  if (type === 'wheel' && inPrevent(ev, e.deltaY)){ // the contact form scrolls; the swipe is remembered so its tail never moves the page once the form runs out
+    wh.last = ev.timeStamp || now; wh.sign = e.deltaY > 0 ? 1 : -1; wh.prev = Math.abs(e.deltaY); wh.dec = 0; wh.inertia = false; wh.recent.length = 0; lastInput = now; return true;
+  }
+  var fm = (type === 'touchstart' || type === 'touchmove' || type === 'touchend') ? formScroller(ev) : null;
+  if (fm && type !== 'touchend' && !(type === 'touchmove' && tch.form === fm && tch.formTop && tch.acc < 0)){ // a finger on the form scrolls the form
+    if (type === 'touchstart'){ tch.form = fm; tch.formTop = fm.scrollTop <= 0; tch.acc = 0; tch.samples = [[ev.timeStamp, 0]]; tch.prevTo = -1; tch.prevDir = 0; lastInput = now; }
+    if (type === 'touchmove'){ tch.acc += e.deltaY; tch.samples.push([ev.timeStamp, tch.acc]); if (tch.samples.length > 40) tch.samples.shift(); }
+    return true;
+  }
+  if (fm && type === 'touchend'){ // a pull down on a form that was already at its top goes back to the previous stop; anything else stayed inside the form
+    var pulled = tch.form === fm && tch.formTop && fm.scrollTop <= 0 && tch.acc < -24; tch.form = null; lastInput = now;
+    if (pulled && !cutting && !(glide && glide.cross)){ var bk = nextIdx(curY(), -1); if (bk >= 0) launch(bk, 0, 'touch', null, nearestIdx(curY())); }
+    return pulled ? false : true;
+  }
+  if (type === 'touchstart') tch.form = null;
   if (type === 'wheel'){
     ev.preventDefault(); lastInput = now;
     if (!e.deltaY || cutting) return false;
-    var sg = e.deltaY > 0 ? 1 : -1, ad = Math.abs(e.deltaY), r = wh.recent, mean = 0;
+    var sg = e.deltaY > 0 ? 1 : -1, ad = Math.abs(e.deltaY), r = wh.recent, mean = 0, te = ev.timeStamp || now; // when the finger moved, not when we got to it: a busy frame never splits one swipe in two
     for (var i=0; i<r.length; i++) mean += r[i]; mean = r.length ? mean/r.length : 0;
-    var fresh = (now - wh.last > 180) || sg !== wh.sign;
-    if (!fresh && (wh.inertia || wh.dec >= 2) && now - wh.t0 > 120 && ad > Math.max(6, 1.5*wh.prev) && ad > 1.25*mean) fresh = true; // a new push rising out of a decaying tail is a new swipe
-    if (fresh){ wh.t0 = now; wh.dec = 0; wh.inertia = false; r.length = 0; }
-    else { wh.dec = ad <= wh.prev ? wh.dec + 1 : 0; if (wh.dec >= 3) wh.inertia = true; }
-    wh.prev = ad; wh.last = now; wh.sign = sg; r.push(ad); if (r.length > 4) r.shift();
+    var gap = te - wh.last, fresh = gap > 180 || sg !== wh.sign;
+    // a busy page can hold back and bunch a swipe's events: a stream that resumes at full strength after a short stall is the same swipe
+    // (a real new swipe ramps up from small deltas; a mouse wheel notch is a large step and still counts each time)
+    if (fresh && sg === wh.sign && gap < 400 && ad > Math.max(12, 0.6*wh.prev) && ad < 50) fresh = false;
+    if (!fresh && wh.inertia && te - wh.t0 > 200 && ad > Math.max(8, 2*wh.prev) && ad > 1.6*mean) fresh = true; // a sharp new push out of a clearly decaying momentum tail is a new swipe; ordinary wobble inside one swipe is not
+    if (fresh){ wh.t0 = te; wh.dec = 0; wh.inertia = false; r.length = 0; }
+    else { wh.dec = ad < wh.prev ? wh.dec + 1 : (ad > wh.prev ? 0 : wh.dec); if (wh.dec >= 4) wh.inertia = true; } // momentum: four strictly falling samples
+    wh.prev = ad; wh.last = te; wh.sign = sg; r.push(ad); if (r.length > 4) r.shift();
     if (fresh) intent(sg, 'wheel', 0);
     return false;
   }
@@ -1652,7 +1671,8 @@ function frame(now){
   var s = 0;
   if (!inWorld) updateHall(p, time); else s = updateWorld(p, time, dt);
   curS = s;
-  var fl = p < CROSS ? 0.8*sstep(CROSS - 0.012, CROSS, p) : 0.8*Math.pow(1 - openEnt(p), 3); // one capped peak at the wall; it clears as the camera travels, mostly in the first moments
+  var fl = p < CROSS ? 0.8*sstep(CROSS - 0.012, CROSS, p) : 0.8*Math.pow(1 - openEnt(p), 3);
+  if (glide && glide.cross && glide.dir < 0) fl = 0; // no flash on the way back // one capped peak at the wall; it clears as the camera travels, mostly in the first moments
   flash.style.opacity = fl.toFixed(3);
   bloom.strength = 0.85 + fl*1.6;
   showCards(p, s);
