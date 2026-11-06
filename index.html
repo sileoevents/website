@@ -327,7 +327,7 @@ var small = Math.min(innerWidth, innerHeight) < 700;
 var Q = small ? 0.55 : 1;
 var dm = new T.Object3D(), tmp = V(0,0,0), tmp2 = V(0,0,0), look = V(0,0,0);
 var SNAP_ON = true;
-var dbg = window.__sileo = { p: 0, s: 0, fade: [], card: [], cam: [0, 0, 0], camY: 0, tier: 0, programs: 0 };
+var dbg = window.__sileo = { nav: null, p: 0, s: 0, fade: [], card: [], cam: [0, 0, 0], camY: 0, tier: 0, programs: 0 };
 var PARTS = []; // particle systems halved at tier 2
 function part(o, n){ o.userData.full = n; PARTS.push(o); return o; }
 var OY = [], OX = [], LIFT = [], cardBox = [], viewW = innerWidth, viewH = innerHeight;
@@ -1119,7 +1119,7 @@ function buildPath(){
     if (sk.fitBox){
       var fb = sk.fitBox;
       for (var j = 1; j < 64; j++){
-        var f = j/64, fe = feStd(f), fade = 1 - sstep(0.10, 0.38, f); // the same rule as stopFade for the stop being left
+        var f = j/64, fe = f, fade = 1 - sstep(0.10, 0.38, f); // the same rule as stopFade for the stop being left
         if (fade <= 0.02) break;
         camCurve.getPoint((k + fe)/(N - 1), fitV);
         if (fitV.x < fb.min.x - 2 || fitV.x > fb.max.x + 2 || fitV.z < fb.min.z - 2 || fitV.z > fb.max.z + 2) continue;
@@ -1213,18 +1213,17 @@ function updateHall(p, time){
 }
 
 function scaleMat(m, k){ if (m.uniforms && m.uniforms.uAlpha) m.uniforms.uAlpha.value *= k; else m.opacity *= k; }
+var DETENT = 0.4, DET = []; for (var dq = 0; dq < 12; dq++) DET.push(0);
 function stopFade(s, i){ return s <= i ? 1 - sstep(0.30, 0.80, i - s) : 1 - sstep(0.10, 0.38, s - i); }
 function worldS(p){ return clamp((p - WORLD0)/(1 - WORLD0), 0, 1)*(N-1); }
 var dirTmp = V(0,0,0), fwdH = V(0,0,0), fwdLevel = V(0,0,-1);
 function updateWorld(p, time, dt){
   var s = worldS(p), k = Math.min(N-2, Math.floor(s)), f = s - k;
   if (s >= N-1){ k = N-2; f = 1; }
-  var fe = feStd(f); // the camera moves from the first pixel of a gesture and settles softly
-  if (glide && glide.map) fe = mapFe(glide.map, k, f);
-  else if (mapOld){ var wb = clamp((performance.now() - mapOldT)/300, 0, 1); if (wb >= 1) mapOld = null; else fe = lerp(mapFe(mapOld, k, f), fe, sstep(0, 1, wb)); }
-  var cPos = k + fe;
-  if (glide && glide.coff){ var gy = p*maxScroll(), gp = glide.y1 !== glide.y0 ? clamp((gy - glide.y0)/(glide.y1 - glide.y0), 0, 1) : 1; cPos += glide.coff*(1 - gp); } // a changed mind never makes the camera jump: the gap closes as the new move travels
-  cPos = clamp(cPos, 0, N-1); lastC = cPos; k = Math.min(N-2, Math.floor(cPos)); fe = cPos - k;
+  // anchors: on a move that passes stops, the camera eases a little at each one it passes (a soft detent, never a stop), then carries on.
+  // The stop it leaves and the stop it lands on get none (the spring already eases there), and a finger on the screen gets none.
+  for (var di = 0; di < N; di++){ var dT = (nav.active && di !== nav.L - IS0 && di !== nav.O - IS0) ? DETENT : 0; DET[di] += (dT - DET[di])*Math.min(1, dt*5); }
+  var dw = lerp(DET[k], DET[k + 1], sstep(0, 1, f)), fe = f + dw*(sstep(0, 1, f) - f);
   camCurve.getPoint((k + fe)/(N-1), camera.position);
   camera.position.y += LIFT[k]*Math.sin(Math.PI*fe); // a gentle crane over the installation being left
   var entT = openEnt(p); // the approach is one move: the camera glides forward on the travel curve, nothing else animates
@@ -1269,7 +1268,9 @@ function updateWorld(p, time, dt){
 }
 
 var scrimB = document.getElementById('scrimB'), chCard = -1;
+var sVel = 0, sLast = 0, sLastT = 0;
 function showCards(p, s){
+  var tn = performance.now(), dts = sLastT ? (tn - sLastT)/1000 : 0, inRecent = Math.exp(-Math.max(0, tn - nav.lastWheel)/150), cardSnap = !sLastT; if (dts > 0){ sVel += (Math.abs(s - sLast)/dts - sVel)*Math.min(1, dts*12); } sLast = s; sLastT = tn;
   var inW = p >= CROSS, sl = 0, sr = 0, best = -1, bestO = 0;
   cards.forEach(function(c, ci){
     var i = +c.dataset.stop, o = 0;
@@ -1278,7 +1279,9 @@ function showCards(p, s){
       if (i === 0) o *= sstep(CROSS + 0.001, CROSS + 0.65*(WORLD0 - CROSS), p); // the first line lands before the camera has fully settled
       if (i === N-1) o = sstep(N-1-0.42, N-1-0.06, s);
     }
-    if (glide && !glide.cross && i !== glide.to - IS0 && i !== glide.origin - IS0) o = 0; // a stop passed through on a longer move stays silent: no text flash
+    if (inW && nav.active) o *= 1 - (i !== nav.L - IS0 ? sstep(0.6, 1.2, sVel) : Math.max(sstep(1.5, 2.0, sVel), inRecent*sstep(1.2, 1.8, sVel))); // travelling: stops flown past stay silent; the destination speaks once the camera is slowing in
+    if (inW){ c._sm = (c._sm == null || cardSnap) ? o : c._sm + (o - c._sm)*Math.min(1, dts*14); if (Math.abs(c._sm - o) < 0.002) c._sm = o; o = c._sm; } else c._sm = o; // eased, never a blink
+    if (inW) o *= 1 - sstep(2.8, 4.2, sVel); // a fast finger drag too
     dbg.card[i] = o;
     setCard(c, o, s - i);
     var side = c.classList.contains('left') || c.classList.contains('right');
@@ -1300,12 +1303,12 @@ function setCard(c, o, d){
   c.style.transform = b + ' translateY(' + y.toFixed(1) + 'px) scale(' + (0.96 + o*0.04).toFixed(3) + ')';
 }
 
-/* ---------------- gestures: one swipe or one wheel tick carries the camera to the next moment ---------------- */
+/* ---------------- input setup ---------------- */
 var UA = navigator.userAgent, iosM = UA.match(/OS (\d+)_\d+(?:_\d+)? like Mac OS X/), verM = UA.match(/Version\/(\d+)/);
 var iosV = iosM ? +iosM[1] : ((/Macintosh/.test(UA) && navigator.maxTouchPoints > 1 && verM) ? +verM[1] : 99);
 var SYNC = iosV >= 16; // iOS below 16: native touch with the idle snap as the fallback
 if (SYNC) root.classList.add('sync'); // before the first applyQuality, so the canvas is sized once (100svh)
-var lenis = window.Lenis ? new Lenis({ lerp: 0.1, wheelMultiplier: 0.85, smoothWheel: true, syncTouch: SYNC, syncTouchLerp: 0.2, virtualScroll: onVS }) : null;
+var lenis = window.Lenis ? new Lenis({ lerp: 0.1, wheelMultiplier: 1, smoothWheel: false, syncTouch: SYNC, syncTouchLerp: 0.2, virtualScroll: onVS }) : null;
 var veil = document.getElementById('veil');
 var H1 = 0.50*CROSS; // hall rest: lights down, beams on SILEO; the crossing dolly moves from its first frame
 function maxScroll(){ return Math.max(1, document.documentElement.scrollHeight - (canvas.clientHeight || innerHeight)); }
@@ -1324,80 +1327,87 @@ function tgY(i){ return TG[i]*maxScroll(); }
 function curY(){ return lenis ? lenis.animatedScroll : scrollY; }
 function nearestIdx(y){ var bi = 0, bd = 1e12; for (var i=0; i<TG.length; i++){ var d = Math.abs(tgY(i) - y); if (d < bd){ bd = d; bi = i; } } return bi; }
 function nextIdx(y, d){ var n = TG.length, i; if (d > 0){ for (i=0; i<n; i++) if (tgY(i) > y + 2) return i; return -1; } for (i=n-1; i>=0; i--) if (tgY(i) < y - 2) return i; return -1; }
-// a Hermite curve that starts at the gesture's own speed (slope m0) and comes to rest (slope 0)
-function herm(m0){ return function(u){ return m0*(u - 2*u*u + u*u*u) + 3*u*u - 2*u*u*u; }; }
-function hermD(m0, u){ return m0*(1 - 4*u + 3*u*u) + 6*u - 6*u*u; }
-function feStd(f){ return 0.35*f + 0.65*sstep(0.10, 0.90, f); }
-function feStdD(f){ var u = clamp((f - 0.10)/0.80, 0, 1); return 0.35 + 0.65*6*u*(1 - u)/0.80; }
-function mapFe(M, k, f){ // the camera parameter for segment k at fraction f under a multi-stop map
-  var g = M.dir > 0 ? f : 1 - f, segFinal = M.dir > 0 ? M.sT - 1 : M.sT, ahead = M.dir > 0 ? (k > M.kr && k < segFinal) : (k < M.kr && k > segFinal), out;
-  if (k === segFinal && k !== M.kr) out = -0.65*g*g*g + 0.65*g*g + g; // slope 1 in, 0.35 out, like fe
-  else if (k === M.kr && k !== segFinal && g >= M.gr){ var L = 1 - M.gr, u = (g - M.gr)/L, u2 = u*u, u3 = u2*u; out = (2*u3 - 3*u2 + 1)*M.feR + (u3 - 2*u2 + u)*M.slR*L + (-2*u3 + 3*u2) + (u3 - u2)*L; }
-  else if (ahead) out = g;
-  else out = feStd(g);
-  return M.dir > 0 ? out : 1 - out;
+/* ---------------- navigation (rebuilt): input moves a target, one critically damped spring carries the camera to the stop it implies ----------------
+   There is no swipe guessing. A scroll of any size or speed moves a target in proportion; the stop it implies is the next stop in the
+   direction of travel, or further when the target runs well past it. One spring, the same for every input (wheel, trackpad, mouse,
+   touch, keys, scrollbar), carries the camera there with its speed always continuous. The only timed moves are the hall entrance and
+   its rewind, which each need a scroll of their own: a scroll still running when one ends is ignored, so momentum can never fling past the first line. */
+var glide = null; // only the scripted hall entrance or rewind
+var anchor = IS0, cutting = false, fingers = 0, lastInput = 0, tch = { acc: 0, samples: [], A: IS0 };
+var nav = { active: false, y: 0, v: 0, L: IS0, A: IS0, T: 0, lastWheel: -1e9, gate: false, done: null, lastT: 0, set: -1, dir: 0, count: 0, pk: 0, lo: 0, rise: 0, prevAd: 0, coast: false };
+dbg.nav = nav;
+var NAV_W = 5.2;        // spring rate: visibly arrived on the next stop in about 1.2 s; longer trips run proportionally faster
+var LAND = 1.1;         // how much firmer the last third of an arrival is
+var NAV_GAP = 200;      // ms of quiet that separates one scroll from the next (one rule everywhere)
+var NAV_PX = 3600;      // wheel or trackpad pixels per extra stop: a real trackpad swipe with its momentum (often 2000+ px) is still one stop; only a long continuous scroll travels further
+var NAV_MAX = 4;        // one flick travels at most this many stops (a long continuous scroll keeps re-counting as it goes)
+function segPx(){ return (stopP(1) - stopP(0))*maxScroll(); }
+function heroY(){ return tgY(IS0); }
+function lastIdx(){ return TG.length - 1; }
+function crossing(){ return !!(glide && glide.cross); }
+// the landing: the first stop at or beyond the target, at least one stop per distinct swipe (count) in the direction of travel, never behind it
+function landingFor(A, T, dir, count){
+  var dy = T - tgY(A), L = A;
+  if (Math.abs(dy) < 4) return A;
+  if (dy > 0){ while (L < lastIdx() && L - A < NAV_MAX && tgY(L) < T) L++; }
+  else { while (L > IS0 && A - L < NAV_MAX && tgY(L) > T) L--; }
+  if (dir > 0) L = Math.max(L, Math.min(A + (count || 0), lastIdx(), A + NAV_MAX), A);
+  else if (dir < 0) L = Math.min(L, Math.max(A - (count || 0), IS0, A - NAV_MAX), A);
+  return L;
 }
-var mapOld = null, mapOldT = 0, lastC = null;
-function retireMap(M){ mapOld = M; mapOldT = performance.now(); } // blend back to the standard mapping over 0.3 s, so an interrupted move never jumps
-var glide = null, anchor = 0, cutting = false, fingers = 0, lastInput = 0, tch = { acc: 0, samples: [] }, wh = { last: 0, sign: 0, recent: [], t0: 0, dec: 0, inertia: false, prev: 0 };
-function glideU(){ return (lenis && lenis.animate.isRunning && glide) ? clamp(lenis.animate.currentTime/glide.D, 0, 1) : 1; }
-function glideVel(){ return glide ? (glide.y1 - glide.y0)/glide.D*hermD(glide.m0, glideU()) : 0; } // px/s, signed
-function launch(to, vAlong, kind, done, from, origin){
-  if (!lenis || to < 0 || to >= TG.length) return;
-  var y0 = curY(), y1 = tgY(to), dist = Math.abs(y1 - y0), ms = maxScroll(), pa = y0/ms;
-  if (dist < 2){ glide = null; anchor = to; if (done) done(); return; }
-  var seg = (stopP(1) - stopP(0))*ms, e = 1e-4;
-  var isCross = (to === IS0 && pa < WORLD0 - e) || (to === 0 && pa > e && pa <= WORLD0 + e);
-  var isHero = (to === IS0 + 1 && pa >= WORLD0 - e && pa < stopP(1)) || (to === IS0 && pa > WORLD0 + e && pa <= stopP(1) + e);
-  var D, m0, m0max = isHero ? 1.5 : 2.5, ease = null;
-  if (isCross){ // the opening plays as one piece, from wherever it is picked up
-    var r0 = clamp(pa/WORLD0, 0, 1), u0 = openInv(r0); m0 = 0;
-    if (to === IS0){ D = Math.max(0.8, OPEN_D*(1 - u0)); ease = function(u){ return r0 >= 1 ? 1 : (openC(u0 + (1 - u0)*u) - r0)/(1 - r0); }; }
-    else { D = Math.max(0.5, OPEN_BACK_D*u0); ease = function(t){ return r0 <= 0 ? 1 : (r0 - openC(openBack(u0, t)))/r0; }; }
-  } else {
-    D = isHero ? clamp(0.8 + 0.9*dist/seg, 0.8, 1.7) : clamp(0.6 + 0.7*dist/seg, 0.6, dist > 1.05*seg ? 2.0 : 1.3); // multi-stop moves may take up to 2 s
-    if (kind === 'wheel' || kind === 'key') m0 = Math.min(0.8, m0max);
-    else { // start at the speed the camera already has: shorten the move rather than cap the speed (a capped speed is a jolt)
-      var lo = kind === 'retarget' ? -2.0 : 0, mr = vAlong*D/dist;
-      if (mr > m0max && vAlong > 0) D = Math.max(0.55, m0max*dist/vAlong);
-      else if (mr < lo && vAlong < 0) D = Math.max(0.6, lo*dist/vAlong);
-      m0 = clamp(vAlong*D/dist, lo, m0max);
-    }
+function isPush(ad){ return nav.lo <= 0.25*nav.pk && nav.rise >= 2 && ad >= Math.max(6, 2.2*nav.lo, 0.4*nav.pk); } // the fingers pushing again after the last swipe's momentum clearly died down
+function wReset(ad){ nav.pk = ad; nav.lo = ad; nav.rise = 0; nav.prevAd = ad; }
+function wTrack(ad){ if (ad > nav.pk){ nav.pk = ad; nav.lo = ad; nav.rise = 0; } else if (ad < nav.lo){ nav.lo = ad; nav.rise = 0; } else if (ad > nav.prevAd) nav.rise++; nav.prevAd = ad; }
+function navTo(L, v, done){
+  L = clamp(L, IS0, lastIdx());
+  if (!nav.active){ nav.O = nearestIdx(curY()); if (!nav.coast){ nav.y = curY(); nav.v = v || 0; } else if (v != null && v !== 0) nav.v = v; nav.set = -1; } // from a coast, carry on at its speed
+  else if (v != null && v !== 0) nav.v = v;
+  nav.coast = false;
+  nav.L = L; nav.active = true; nav.done = done || null;
+  var toT = tgY(L) - nav.y; if (nav.v*toT > 0 && Math.abs(nav.v) > NAV_W*Math.abs(toT)) nav.v = NAV_W*toT; // a critically damped spring never overshoots when its start speed is within this
+}
+function navStep(now){
+  var dt = nav.lastT ? Math.min(0.05, Math.max(0, (now - nav.lastT)/1000)) : 0.016; nav.lastT = now;
+  if (glide && glide.cross && lenis && !lenis.isLocked && !(lenis.animate && lenis.animate.isRunning)){ var gto = glide.to; glide = null; startCross(gto); return; } // the scripted move was interrupted: carry on
+  if (!nav.active && !nav.coast) return;
+  var ext = nav.set >= 0 && Math.abs(scrollY - nav.set) > 40; // the page moved somewhere the spring did not put it: the scrollbar is being dragged
+  if (crossing() || cutting || fingers > 0 || ext){ nav.active = false; nav.coast = false; nav.v = 0; return; }
+  var sgp = segPx(), yT = tgY(nav.L), x = nav.y - yT, w = NAV_W*(1 + LAND*clamp(1 - Math.abs(x)/(0.35*sgp), 0, 1)); // a firmer landing: the pull tightens over the last third of a gap
+  if (nav.v*(-x) > 0 && Math.abs(nav.v) > w*Math.abs(x)) nav.v = -w*x; // never faster than the tightened spring can take without overshooting
+  var ex = Math.exp(-w*dt), c = nav.v + w*x;
+  var nx = (x + c*dt)*ex, nv = (nav.v - c*w*dt)*ex; // exact critically damped step: no overshoot, no oscillation, speed continuous
+  nav.y = yT + nx; nav.v = nv;
+  var sg = segPx();
+  if (nav.active && Math.abs(nx) < Math.max(0.5, 0.01*sg) && Math.abs(nv) < 0.05*sg){ // visibly arrived: the next scroll counts from this stop; the camera coasts the last pixels on the same curve, never a snap
+    nav.active = false; nav.coast = true; anchor = nav.L; lastSettle = now;
+    if (now - nav.lastWheel < NAV_GAP){ nav.A = nav.L; nav.count = 0; } // arrived while that scroll is still coming in: the rest of it counts on from here, by distance alone
+    var fn = nav.done; nav.done = null; if (fn) fn();
+    if (nav.pendingRewind && nav.L === IS0){ nav.pendingRewind = false; startCross(0); return; }
   }
-  var g = { from: from != null ? from : (glide ? glide.from : anchor), to: to, y0: y0, y1: y1, D: D, m0: m0, dir: y1 > y0 ? 1 : -1, cross: isCross, queued: 0, done: done, origin: origin != null ? origin : nearestIdx(y0) };
-  // (b) a move spanning more than one segment maps the camera linearly through the stops it passes, so it never brakes there
-  var Mold = glide && glide.map; if (Mold) retireMap(Mold);
-  if (!isCross && to >= IS0 && pa >= WORLD0 - e && dist > 1.05*seg){
-    var sNow = worldS(pa), dirM = g.dir, kr = dirM > 0 ? Math.min(N-2, Math.floor(sNow + 1e-6)) : Math.max(0, Math.ceil(sNow - 1e-6) - 1), fr = clamp(sNow - kr, 0, 1), gr = dirM > 0 ? fr : 1 - fr;
-    // start the new map from where the camera is now (the old map's value and slope if this retargets a remapped move)
-    var h = 1e-3, fA = Mold ? mapFe(Mold, kr, fr) : feStd(fr), fB = Mold ? mapFe(Mold, kr, clamp(fr + h*dirM, 0, 1)) : feStd(clamp(fr + h*dirM, 0, 1)), slope = Math.abs(fB - fA)/h;
-    g.map = { dir: dirM, kr: kr, gr: clamp(gr, 0, 0.999), feR: dirM > 0 ? fA : 1 - fA, slR: slope, sT: to - IS0 };
-    mapOld = null; // the new map carries on from the current point, no blend needed
-  }
-  if (!isCross && pa >= WORLD0 - e && lastC != null){
-    var sN = worldS(pa), kN = Math.min(N-2, Math.floor(sN)), fN = sN - kN; if (sN >= N-1){ kN = N-2; fN = 1; }
-    g.coff = lastC - (kN + (g.map ? mapFe(g.map, kN, fN) : feStd(fN))); if (Math.abs(g.coff) < 1e-4) g.coff = 0;
-    mapOld = null; // the carried offset replaces the timed blend
-  }
+  if (nav.coast && Math.abs(nx) < 0.3 && Math.abs(nv) < 3){ nav.coast = false; nav.y = yT; nav.v = 0; lenis.scrollTo(yT, { immediate: true, force: true }); nav.set = -1; return; } // sub-pixel: done
+  lenis.scrollTo(nav.y, { immediate: true, force: true }); nav.set = scrollY;
+}
+function startCross(to){ // the entrance (to the first line) or the rewind (to the seat): one committed move
+  if (!lenis || cutting) return;
+  var y0 = curY(), y1 = tgY(to), ms = maxScroll(), pa = y0/ms;
+  nav.active = false; nav.coast = false; nav.v = 0; nav.gate = true; nav.pendingRewind = false; nav.A = nav.L = to; nav.T = y1;
+  if (Math.abs(y1 - y0) < 2){ anchor = to; return; }
+  var r0 = clamp(pa/WORLD0, 0, 1), u0 = openInv(r0), D, ease;
+  if (to === IS0){ D = Math.max(0.8, OPEN_D*(1 - u0)); ease = function(u){ return r0 >= 1 ? 1 : (openC(u0 + (1 - u0)*u) - r0)/(1 - r0); }; }
+  else { D = Math.max(0.5, OPEN_BACK_D*u0); ease = function(t){ return r0 <= 0 ? 1 : (r0 - openC(openBack(u0, t)))/r0; }; }
+  var g = { to: to, y0: y0, y1: y1, D: D, dir: y1 > y0 ? 1 : -1, cross: true };
   glide = g;
-  lenis.scrollTo(y1, { duration: D, easing: ease || herm(m0), lock: isCross, force: true, onComplete: function(){ if (glide === g){ if (g.map) retireMap(g.map); glide = null; anchor = to; lastSettle = performance.now(); if (g.done) g.done(); } } });
+  lenis.scrollTo(y1, { duration: D, easing: ease, lock: true, force: true, onComplete: function(){ if (glide === g){ glide = null; anchor = to; nav.y = tgY(to); lastSettle = performance.now(); } } });
 }
-function intent(d, kind, v0){
-  if (cutting || !lenis) return;
-  if (glide){
-    if (glide.cross) return; // the crossing is one committed move
-    if (d === glide.dir){ // retarget at once, at most two stops past the stop nearest the camera, from the current speed
-      var near = nearestIdx(curY()), nt = glide.to + d; nt = d > 0 ? Math.min(nt, near + 3) : Math.max(nt, near - 3); // quick swipes stack, one stop each
-      if (nt === glide.to || nt < 0 || nt >= TG.length) return;
-      var old = glide; launch(nt, glideVel()*d, 'chain', null, old.from, old.origin); return;
-    }
-    launch(glide.from, glideVel()*d, 'retarget', null, glide.to); // an opposite gesture returns to the anchor, from the current speed
-    return;
-  }
-  var to = nextIdx(curY(), d); if (to < 0) return;
-  launch(to, (v0 || 0)*d, kind, null, nearestIdx(curY()));
+function atHeroRest(y){ return !nav.active && nav.L === IS0 && Math.abs(y - heroY()) < Math.max(3, 0.012*segPx()); }
+function navStepKey(d){ // arrow keys, page keys, space, and the pull at the top of the form: exactly one stop
+  if (cutting || crossing() || !lenis) return;
+  var y = curY();
+  if (y/maxScroll() < WORLD0 - 1e-4){ startCross(d > 0 ? IS0 : 0); return; }
+  if (d < 0 && atHeroRest(y)){ startCross(0); return; }
+  var A = nav.active ? nav.L : nearestIdx(y); if (A < IS0) A = IS0;
+  nav.A = A; nav.T = tgY(clamp(A + d, IS0, lastIdx())); nav.dir = d; nav.count = 1; navTo(A + d);
 }
-function glideTick(){} // chaining is now an immediate retarget (round 2 verification)
 function inPrevent(ev, dy){ var path = ev.composedPath ? ev.composedPath() : [];
   for (var i=0; i<path.length; i++){ var el = path[i]; if (el === document.documentElement) break;
     if (el.hasAttribute && el.hasAttribute('data-lenis-prevent')){ // native scroll only if this element can actually scroll that way
@@ -1409,42 +1419,60 @@ function onVS(e){
   var ev = e.event, type = ev.type;
   var now = performance.now();
   if (ev.ctrlKey) return true; // pinch zoom
-  if (type === 'wheel' && inPrevent(ev, e.deltaY)){ // the contact form scrolls; the swipe is remembered so its tail never moves the page once the form runs out
-    wh.last = ev.timeStamp || now; wh.sign = e.deltaY > 0 ? 1 : -1; wh.prev = Math.abs(e.deltaY); wh.dec = 0; wh.inertia = false; wh.recent.length = 0; lastInput = now; return true;
+  if (type === 'wheel'){ // which thing does this scroll belong to? decided once, when the scroll begins
+    if (now - nav.lastWheel > NAV_GAP) nav.inForm = inPrevent(ev, e.deltaY) && !nav.active && !crossing() && !cutting; // the form can scroll this way when the scroll begins
+    if (nav.inForm){ nav.lastWheel = now; lastInput = now; if (inPrevent(ev, e.deltaY)) return true; ev.preventDefault(); return false; } // a scroll that began on the form scrolls only the form
   }
   var fm = (type === 'touchstart' || type === 'touchmove' || type === 'touchend') ? formScroller(ev) : null;
   if (fm && type !== 'touchend' && !(type === 'touchmove' && tch.form === fm && tch.formTop && tch.acc < 0)){ // a finger on the form scrolls the form
-    if (type === 'touchstart'){ tch.form = fm; tch.formTop = fm.scrollTop <= 0; tch.acc = 0; tch.samples = [[ev.timeStamp, 0]]; tch.prevTo = -1; tch.prevDir = 0; lastInput = now; }
+    if (type === 'touchstart'){ tch.form = fm; tch.formTop = fm.scrollTop <= 0; tch.acc = 0; tch.samples = [[ev.timeStamp, 0]]; lastInput = now; }
     if (type === 'touchmove'){ tch.acc += e.deltaY; tch.samples.push([ev.timeStamp, tch.acc]); if (tch.samples.length > 40) tch.samples.shift(); }
     return true;
   }
-  if (fm && type === 'touchend'){ // a pull down on a form that was already at its top goes back to the previous stop; anything else stayed inside the form
+  if (fm && type === 'touchend'){ // a pull down on a form already at its top goes back one stop; anything else stayed inside the form
     var pulled = tch.form === fm && tch.formTop && fm.scrollTop <= 0 && tch.acc < -24; tch.form = null; lastInput = now;
-    if (pulled && !cutting && !(glide && glide.cross)){ var bk = nextIdx(curY(), -1); if (bk >= 0) launch(bk, 0, 'touch', null, nearestIdx(curY())); }
+    if (pulled) navStepKey(-1); else if (!crossing() && !cutting && Math.abs(curY() - tgY(nav.L)) > 1) navTo(nav.L);
     return pulled ? false : true;
   }
   if (type === 'touchstart') tch.form = null;
   if (type === 'wheel'){
     ev.preventDefault(); lastInput = now;
-    if (!e.deltaY || cutting) return false;
-    var sg = e.deltaY > 0 ? 1 : -1, ad = Math.abs(e.deltaY), r = wh.recent, mean = 0, te = ev.timeStamp || now; // when the finger moved, not when we got to it: a busy frame never splits one swipe in two
-    for (var i=0; i<r.length; i++) mean += r[i]; mean = r.length ? mean/r.length : 0;
-    var gap = te - wh.last, fresh = gap > 180 || sg !== wh.sign;
-    // a busy page can hold back and bunch a swipe's events: a stream that resumes at full strength after a short stall is the same swipe
-    // (a real new swipe ramps up from small deltas; a mouse wheel notch is a large step and still counts each time)
-    if (fresh && sg === wh.sign && gap < 400 && ad > Math.max(12, 0.6*wh.prev) && ad < 50) fresh = false;
-    if (!fresh && wh.inertia && te - wh.t0 > 200 && ad > Math.max(8, 2*wh.prev) && ad > 1.6*mean) fresh = true; // a sharp new push out of a clearly decaying momentum tail is a new swipe; ordinary wobble inside one swipe is not
-    if (fresh){ wh.t0 = te; wh.dec = 0; wh.inertia = false; r.length = 0; }
-    else { wh.dec = ad < wh.prev ? wh.dec + 1 : (ad > wh.prev ? 0 : wh.dec); if (wh.dec >= 4) wh.inertia = true; } // momentum: four strictly falling samples
-    wh.prev = ad; wh.last = te; wh.sign = sg; r.push(ad); if (r.length > 4) r.shift();
-    if (fresh) intent(sg, 'wheel', 0);
+    var gapW = now - nav.lastWheel, newScroll = gapW > NAV_GAP; nav.lastWheel = now;
+    if (cutting){ nav.gate = true; return false; }
+    if (!e.deltaY) return false;
+    var ad = Math.abs(e.deltaY), sgn = e.deltaY > 0 ? 1 : -1;
+    if (newScroll) wReset(ad);
+    if (crossing()){ nav.gate = true; if (!newScroll) wTrack(ad); return false; } // input waits while the entrance or rewind plays
+    if (nav.gate){ // the scroll that was running when it ended is ignored; a new scroll, or a fresh push inside its tail, is not
+      if (!newScroll && !isPush(ad)){ wTrack(ad); return false; }
+      nav.gate = false; newScroll = true; wReset(ad);
+    }
+    var y = curY();
+    if (y/maxScroll() < WORLD0 - 1e-4){ if (e.deltaY > 0) startCross(IS0); return false; } // from the seat: the entrance
+    if (!nav.active && !newScroll && sgn === nav.dir && isPush(ad)) newScroll = true; // at rest, a fresh push inside the last tail starts a new move (and can rewind at the hero)
+    if (!nav.active && (newScroll || sgn !== nav.dir)){ // a scroll that starts with the camera at rest counts from the stop it is on
+      if (sgn < 0 && atHeroRest(y)){ startCross(0); return false; } // at the first line, a new scroll back plays the rewind
+      nav.A = nearestIdx(y); if (nav.A < IS0) nav.A = IS0; nav.T = tgY(nav.A); nav.dir = sgn; nav.count = 1; wReset(ad);
+    } else if (nav.active && sgn !== nav.dir){ // reversing mid-move counts back from where the move was going: one swipe back returns
+      nav.A = nav.L; nav.T = tgY(nav.L); nav.dir = sgn; nav.count = 1; wReset(ad);
+    } else if (nav.active){
+      // a distinct new swipe: the fingers push again after the last swipe's momentum has clearly died down (falls to a quarter of its peak, then
+      // climbs back to 40% of it). Wobble inside one swipe never does this, and neither does a busy page holding events back.
+      // A separate wheel click (one large step after 0.3 s of quiet) counts the same way.
+      var click = gapW > 300 && ad >= 48, onset = isPush(ad);
+      if (click || onset){ nav.count = Math.min((nav.count || 1) + 1, NAV_MAX); wReset(ad); } else wTrack(ad);
+    } else wTrack(ad); // at rest, the same scroll's tail still arriving: never moves on by itself
+    nav.T = clamp(nav.T + e.deltaY*segPx()/NAV_PX, heroY(), maxScroll()); // and the distance scrolled carries further on top
+    var L = landingFor(nav.A, nav.T, nav.dir, nav.count);
+    nav.pendingRewind = nav.dir < 0 && L === IS0 && nav.A - (nav.count || 0) < IS0; // one more swipe back than there are stops: rewind on arrival
+    if (L !== nav.L || !nav.active) navTo(L);
     return false;
   }
   if (!SYNC) return true; // old iOS: native touch, the idle snap handles the rest
   if (type === 'touchstart'){
     lastInput = now; tch.acc = 0; tch.samples = [[ev.timeStamp, 0]];
-    tch.prevTo = (glide && !glide.cross) ? glide.to : -1; tch.prevDir = glide ? glide.dir : 0; tch.prevFrom = glide ? glide.from : -1;
-    if (glide && !glide.cross){ if (glide.map) retireMap(glide.map); glide = null; } // Lenis reset() catches the running glide
+    tch.A = nav.active ? nav.L : nearestIdx(curY()); tch.y0 = curY(); // a flick during a move counts from where the move was going, by the finger's own travel
+    if (!crossing()){ nav.active = false; nav.v = 0; }
     return true;
   }
   if (type === 'touchmove'){
@@ -1454,26 +1482,24 @@ function onVS(e){
   }
   if (type === 'touchend'){
     lastInput = now;
-    if ((ev.touches && ev.touches.length) || (glide && glide.cross) || cutting) return false;
+    if ((ev.touches && ev.touches.length) || crossing() || cutting) return false;
     var S = tch.samples, last = S[S.length - 1], j = S.length - 1;
     while (j > 0 && ev.timeStamp - S[j-1][0] <= 80) j--;
     var dts = (last[0] - S[j][0])/1000, v0 = dts > 0.008 ? (last[1] - S[j][1])/dts : 0;
     if (ev.timeStamp - last[0] > 100) v0 = 0; // the finger rested before lifting
-    if (Math.abs(tch.acc) > 24 || Math.abs(v0) > 250){
-      var d = Math.abs(v0) > 250 ? (v0 > 0 ? 1 : -1) : (tch.acc > 0 ? 1 : -1), to = nextIdx(curY(), d);
-      if (tch.prevTo >= 0 && d === tch.prevDir){ var nr = nearestIdx(curY()); to = tch.prevTo + d; to = d > 0 ? Math.min(to, nr + 3, TG.length - 1) : Math.max(to, nr - 3, IS0); } // a flick during a move adds a stop
-      if (to < 0) to = nearestIdx(curY());
-      launch(to, v0*d, 'touch', null, nearestIdx(curY()));
-    } else {
-      var back = nearestIdx(curY()); launch(back, v0*(tgY(back) > curY() ? 1 : -1), 'touch', null, back);
-    }
+    var y2 = curY(); lenis.scrollTo(y2, { immediate: true, force: true }); // the spring takes over from here, at the finger's speed
+    var d = Math.abs(v0) > 250 ? (v0 > 0 ? 1 : -1) : (tch.acc > 24 ? 1 : tch.acc < -24 ? -1 : 0);
+    if (y2/maxScroll() < WORLD0 - 1e-4){ startCross(d > 0 ? IS0 : d < 0 ? 0 : (tch.A >= IS0 ? IS0 : 0)); return false; } // released inside the hall: finish the entrance or the rewind (a tiny touch goes back where it was)
+    var A = tch.A < IS0 ? IS0 : tch.A, T = clamp(tgY(A) + (y2 - tch.y0) + v0*0.30, heroY(), maxScroll()), L = d === 0 ? A : landingFor(A, T, d, 1);
+    if (d > 0) L = Math.max(L, Math.min(A + 1, lastIdx())); else if (d < 0) L = Math.min(L, Math.max(A - 1, IS0)); // always in the finger's direction
+    nav.A = A; nav.T = tgY(L); nav.dir = d; nav.count = 1; navTo(L, v0);
     return false;
   }
   return true;
 }
 addEventListener('touchstart', function(e){ fingers = e.touches.length; }, { passive: true });
 addEventListener('touchend', function(e){ fingers = e.touches.length; }, { passive: true });
-addEventListener('touchcancel', function(e){ fingers = e.touches.length; }, { passive: true });
+addEventListener('touchcancel', function(e){ fingers = e.touches.length; if (fingers || !lenis || crossing() || cutting) return; var y = curY(); if (y/maxScroll() < WORLD0 - 1e-4) startCross(tch.A >= IS0 ? IS0 : 0); else navTo(nav.active ? nav.L : nearestIdx(y)); }, { passive: true });
 addEventListener('keydown', function(e){
   var tgt = e.target, tag = tgt && tgt.tagName;
   if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || (tgt && tgt.isContentEditable)) return;
@@ -1481,15 +1507,15 @@ addEventListener('keydown', function(e){
   if (k === 'ArrowDown' || k === 'PageDown' || (k === ' ' && !e.shiftKey)) d = 1;
   else if (k === 'ArrowUp' || k === 'PageUp' || (k === ' ' && e.shiftKey)) d = -1;
   else if (k === 'Home'){ e.preventDefault(); if (!cutting) cut(0); return; }
-  else if (k === 'End'){ e.preventDefault(); if (!cutting) cut(maxScroll()); return; }
+  else if (k === 'End'){ e.preventDefault(); if (cutting || crossing()) return; if (smoothP >= WORLD0 && worldS(smoothP) >= N-2){ nav.T = tgY(lastIdx()); navTo(lastIdx()); } else cut(maxScroll()); return; }
   if (!d) return;
-  e.preventDefault(); lastInput = performance.now(); intent(d, 'key', 0);
+  e.preventDefault(); lastInput = performance.now(); if (e.repeat && nav.active) return; navStepKey(d);
 });
-// native scrolling (scrollbar, old iOS touch): wait for it to end, then settle with the same Hermite glide, never a jump
+// native scrolling (scrollbar, old iOS touch): wait for it to end, then the same spring settles it on a stop
 var nat = { t: 0, s: [], dir: 1 };
-addEventListener('scroll', function(){ if (lenis && lenis.isScrolling === 'native'){ var n = performance.now(), y = scrollY, L = nat.s; if (L.length && y !== L[L.length-1][1]) nat.dir = y > L[L.length-1][1] ? 1 : -1; nat.t = n; L.push([n, y]); if (L.length > 12) L.shift(); } }, { passive: true });
+addEventListener('scroll', function(){ if (nav.active || nav.coast || glide || Math.abs(scrollY - nav.set) < 1.5) return; if (lenis && lenis.isScrolling === 'native'){ var n = performance.now(), y = scrollY, L = nat.s; if (L.length && y !== L[L.length-1][1]) nat.dir = y > L[L.length-1][1] ? 1 : -1; nat.t = n; L.push([n, y]); if (L.length > 12) L.shift(); } }, { passive: true });
 function nativeSnap(now){
-  if (!SNAP_ON || !lenis || glide || cutting || fingers > 0 || lenis.isScrolling !== 'native') return;
+  if (!SNAP_ON || !lenis || glide || nav.active || nav.coast || cutting || fingers > 0 || lenis.isScrolling !== 'native') return;
   if (now - nat.t < 120) return;
   var L = nat.s, v = 0; if (L.length > 1){ var a = L[0], b = L[L.length-1]; for (var i=0; i<L.length; i++) if (b[0] - L[i][0] <= 100){ a = L[i]; break; } if (b[0] > a[0]) v = (b[1] - a[1])/((b[0] - a[0])/1000); }
   if (now - nat.t < 200 && Math.abs(v) > 30) return; // never fight native momentum
@@ -1499,11 +1525,12 @@ function nativeSnap(now){
   var gap = Math.abs(TG[ib] - TG[ia]), to = (ib !== ia && Math.abs(p - TG[ia]) > 0.10*gap) ? ib : ia;
   nat.s = [];
   if (Math.abs(tgY(to) - y) < 2) return;
-  launch(to, 0, 'native', null, ia);
+  if (TG[to] < WORLD0 - 1e-4 || (to === 0 && p < WORLD0)){ startCross(nat.dir > 0 ? IS0 : 0); return; }
+  nav.A = ia < IS0 ? IS0 : ia; navTo(to, 0);
 }
 // A jump is a cut under a short veil, never a fast forward through the stops
 function cut(y, done){
-  cutting = true; if (glide && glide.map) retireMap(glide.map); glide = null;
+  cutting = true; glide = null; nav.active = false; nav.coast = false; nav.v = 0;
   var fired = false, tCut = performance.now();
   function onEnd(e){ if (e.propertyName === 'opacity') go(); }
   function go(){ // jump only once the veil is fully closed
@@ -1512,7 +1539,7 @@ function cut(y, done){
     fired = true;
     veil.removeEventListener('transitionend', onEnd);
     if (lenis) lenis.scrollTo(y, { immediate: true, force: true }); else scrollTo(0, y);
-    smoothP = clamp(y/maxScroll(), 0, 1); anchor = nearestIdx(y); skipFrames(30);
+    smoothP = clamp(y/maxScroll(), 0, 1); anchor = nearestIdx(y); nav.A = nav.L = anchor; nav.T = y; nav.y = y; nav.gate = true; sVel = 0; sLastT = 0; skipFrames(30);
     requestAnimationFrame(function(){ requestAnimationFrame(function(){ veil.style.opacity = '0'; cutting = false; lastSettle = performance.now(); if (done) done(); }); });
   }
   veil.addEventListener('transitionend', onEnd);
@@ -1525,14 +1552,14 @@ document.getElementById('jump').addEventListener('click', function(e){
   if (cutting) return;
   var s = smoothP >= CROSS ? worldS(smoothP) : 0;
   if (s >= N-1-0.02){ focusForm(); return; }
-  if (s >= N-2 && lenis && !(glide && glide.cross)){ glide = null; launch(TG.length - 1, 0, 'key', focusForm, nearestIdx(curY())); return; }
+  if (s >= N-2 && lenis && !crossing()){ nav.A = nearestIdx(curY()); nav.T = tgY(lastIdx()); nav.gate = true; navTo(lastIdx(), 0, focusForm); return; }
   cut(maxScroll(), focusForm);
 });
 document.getElementById('home').addEventListener('click', function(e){ e.preventDefault(); if (!cutting && smoothP > 0.001) cut(0); });
 
 /* ---------------- rest: heavy jobs wait until nothing moves, one per frame ---------------- */
 var restQ = [], lastSettle = 0, lastMove = 0, lastTarget = -1, curTarget = 0;
-function atRest(now){ return !glide && !cutting && fingers === 0 && !(lenis && lenis.isLocked) && now - lastInput > 300 && now - lastMove > 300 && Math.abs(curTarget - smoothP) < 1e-4; }
+function atRest(now){ return !glide && !nav.active && !nav.coast && !cutting && fingers === 0 && !(lenis && lenis.isLocked) && now - lastInput > 300 && now - lastMove > 300 && Math.abs(curTarget - smoothP) < 1e-4; }
 function whenRest(fn){ restQ.push(fn); }
 
 /* ---------------- sizing and quality: one path for resize, DPR and tier changes ---------------- */
@@ -1564,14 +1591,24 @@ function measureCards(){
   cardBox = cards.map(function(c){ return { top: c.offsetTop, h: c.offsetHeight, left: c.offsetLeft, w: c.offsetWidth }; }); chCard = -1;
 }
 var resizeT = 0;
+var navMax = 0;
+function keepPlace(){ // the track is measured in screen heights, so a resize moves every stop: put the camera back where it was
+  var nm = maxScroll(), om = navMax; navMax = nm; if (!om || Math.abs(nm - om) < 1 || !lenis || cutting) return;
+  if (lenis.resize) lenis.resize();
+  if (glide && glide.cross){ var gto = glide.to; glide = null; lenis.scrollTo(smoothP*nm, { immediate: true, force: true }); startCross(gto); return; }
+  if (nav.active || nav.coast){ nav.y *= nm/om; nav.T *= nm/om; lenis.scrollTo(nav.y, { immediate: true, force: true }); nav.set = scrollY; return; }
+  var y = (smoothP >= WORLD0 - 1e-4) ? tgY(nearestIdx(smoothP*nm)) : smoothP*nm;
+  lenis.scrollTo(y, { immediate: true, force: true }); smoothP = clamp(y/nm, 0, 1);
+}
 function onResize(){
+  keepPlace();
   if (frameNarrow() !== FRAME.narrow) drawGraphics();
   if (curKey() !== sizeKey){ clearTimeout(resizeT); resizeT = setTimeout(function(){ applyQuality(); measureCards(); buildPath(); skipFrames(30); }, 150); }
   else { measureCards(); buildPath(); } // height-only change: the canvas is unchanged, only the cards moved
 }
 addEventListener('resize', onResize);
 (function watchDpr(){ try { var mq = matchMedia('(resolution: ' + (devicePixelRatio || 1) + 'dppx)'), h = function(){ mq.removeEventListener('change', h); onResize(); watchDpr(); }; mq.addEventListener('change', h); } catch(err){} })();
-applyQuality(); measureCards(); buildPath();
+applyQuality(); measureCards(); buildPath(); navMax = maxScroll();
 if (document.fonts && document.fonts.ready) document.fonts.ready.then(function(){
   whenRest(drawGraphics);
   whenRest(function(){ if (STOPS[5].redraw) STOPS[5].redraw(); });
@@ -1651,6 +1688,7 @@ function frame(now){
   if (dead) return;
   requestAnimationFrame(frame);
   if (lenis) lenis.raf(now); // one clock: Lenis and the scene share this rAF time
+  if (lenis) navStep(now);
   monitor(now);
   if (formFocus && now - lastDraw < 32) return; // 30 fps while someone types
   lastDraw = now;
@@ -1659,7 +1697,7 @@ function frame(now){
   var target = clamp(scrollY / maxScroll(), 0, 1); curTarget = target;
   if (Math.abs(target - lastTarget) > 1e-6){ lastMove = now; lastTarget = target; }
   // p is the scroll itself whenever Lenis drives it (glides, the synced drag); smoothing only for native scrolling
-  if (lenis && lenis.isScrolling === 'native') smoothP += (target - smoothP)*Math.min(1, dt*14); else smoothP = target;
+  if (lenis && lenis.isScrolling === 'native' && !nav.active) smoothP += (target - smoothP)*Math.min(1, dt*14); else smoothP = target;
   if (Math.abs(target - smoothP) < 1e-6) smoothP = target;
   var p = smoothP;
   bar.style.transform = 'scaleX(' + p.toFixed(4) + ')';
@@ -1676,7 +1714,6 @@ function frame(now){
   flash.style.opacity = fl.toFixed(3);
   bloom.strength = 0.85 + fl*1.6;
   showCards(p, s);
-  glideTick();
   nativeSnap(now);
   restTick(now, s, inWorld);
   composer.render();
