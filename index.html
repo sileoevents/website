@@ -1395,20 +1395,24 @@ function navStep(now){
 function startCross(to){ // the entrance (to the first line) or the rewind (to the seat): one committed move
   if (!lenis || cutting) return;
   var y0 = curY(), y1 = tgY(to), ms = maxScroll(), pa = y0/ms;
-  nav.active = false; nav.coast = false; nav.v = 0; nav.gate = true; nav.pendingRewind = false; nav.A = nav.L = to; nav.T = y1;
-  if (Math.abs(y1 - y0) < 2){ anchor = to; return; }
+  nav.active = false; nav.coast = false; nav.v = 0; nav.gate = true; nav.pendingRewind = false; nav.queued = false; nav.A = nav.L = to; nav.T = y1;
+  if (Math.abs(y1 - y0) < 4){ anchor = to; nav.gate = false; return; }
   var r0 = clamp(pa/WORLD0, 0, 1), u0 = openInv(r0), D, ease;
   if (to === IS0){ D = Math.max(0.8, OPEN_D*(1 - u0)); ease = function(u){ return r0 >= 1 ? 1 : (openC(u0 + (1 - u0)*u) - r0)/(1 - r0); }; }
   else { D = Math.max(0.5, OPEN_BACK_D*u0); ease = function(t){ return r0 <= 0 ? 1 : (r0 - openC(openBack(u0, t)))/r0; }; }
   var g = { to: to, y0: y0, y1: y1, D: D, dir: y1 > y0 ? 1 : -1, cross: true };
   glide = g;
-  lenis.scrollTo(y1, { duration: D, easing: ease, lock: true, force: true, onComplete: function(){ if (glide === g){ glide = null; anchor = to; nav.y = tgY(to); lastSettle = performance.now(); } } });
+  lenis.scrollTo(y1, { duration: D, easing: ease, lock: true, force: true, onComplete: function(){ if (glide === g){ glide = null; anchor = to; nav.y = tgY(to); lastSettle = performance.now(); lenis.scrollTo(tgY(to), { immediate: true, force: true }); smoothP = clamp(tgY(to)/maxScroll(), 0, 1);
+    if (nav.queued && to === IS0){ nav.queued = false; nav.gate = false; nav.A = IS0; nav.T = tgY(IS0); nav.dir = 1; nav.count = 1; navTo(IS0 + 1); } nav.queued = false; } } });
 }
+function inHall(y){ return y < heroY() - 4; }
+function lateEntrance(d){ return d > 0 && glide && glide.cross && glide.dir > 0 && curY()/maxScroll() >= CROSS + 0.5*(WORLD0 - CROSS); }
 function atHeroRest(y){ return !nav.active && nav.L === IS0 && Math.abs(y - heroY()) < Math.max(3, 0.012*segPx()); }
 function navStepKey(d){ // arrow keys, page keys, space, and the pull at the top of the form: exactly one stop
-  if (cutting || crossing() || !lenis) return;
+  if (cutting || !lenis) return;
+  if (crossing()){ if (lateEntrance(d)) nav.queued = true; return; }
   var y = curY();
-  if (y/maxScroll() < WORLD0 - 1e-4){ startCross(d > 0 ? IS0 : 0); return; }
+  if (inHall(y)){ startCross(d > 0 ? IS0 : 0); return; }
   if (d < 0 && atHeroRest(y)){ startCross(0); return; }
   var A = nav.active ? nav.L : nearestIdx(y); if (A < IS0) A = IS0;
   nav.A = A; nav.T = tgY(clamp(A + d, IS0, lastIdx())); nav.dir = d; nav.count = 1; navTo(A + d);
@@ -1447,13 +1451,13 @@ function onVS(e){
     if (!e.deltaY) return false;
     var ad = Math.abs(e.deltaY), sgn = e.deltaY > 0 ? 1 : -1;
     if (newScroll) wReset(ad);
-    if (crossing()){ nav.gate = true; if (!newScroll) wTrack(ad); return false; } // input waits while the entrance or rewind plays
+    if (crossing()){ nav.gate = true; if (!newScroll) wTrack(ad); else if (lateEntrance(sgn)) nav.queued = true; return false; } // input waits while the entrance or rewind plays; a forward scroll once the first line is showing is kept for when it lands
     if (nav.gate){ // the scroll that was running when it ended is ignored; a new scroll, or a fresh push inside its tail, is not
       if (!newScroll && !isPush(ad)){ wTrack(ad); return false; }
       nav.gate = false; newScroll = true; wReset(ad);
     }
     var y = curY();
-    if (y/maxScroll() < WORLD0 - 1e-4){ if (e.deltaY > 0) startCross(IS0); return false; } // from the seat: the entrance
+    if (inHall(y)){ if (e.deltaY > 0) startCross(IS0); return false; } // from the seat: the entrance
     if (!nav.active && !newScroll && sgn === nav.dir && isPush(ad)) newScroll = true; // at rest, a fresh push inside the last tail starts a new move (and can rewind at the hero)
     if (!nav.active && (newScroll || sgn !== nav.dir)){ // a scroll that starts with the camera at rest counts from the stop it is on
       if (sgn < 0 && atHeroRest(y)){ startCross(0); return false; } // at the first line, a new scroll back plays the rewind
@@ -1465,7 +1469,7 @@ function onVS(e){
       // climbs back to 40% of it). Wobble inside one swipe never does this, and neither does a busy page holding events back.
       // A separate wheel click (one large step after 0.3 s of quiet) counts the same way.
       // a separate scroll (after a pause) or a fresh push inside the last one's momentum: one more stop
-      if (newScroll || isPush(ad)){ nav.count = Math.min((nav.count || 1) + 1, NAV_MAX); wReset(ad); } else wTrack(ad);
+      if (newScroll || isPush(ad)){ nav.A = nav.L; nav.T = tgY(nav.L); nav.count = 1; wReset(ad); } else wTrack(ad); // counts on from where the move is heading, so chains never hit a cap
     } else wTrack(ad); // at rest, the same scroll's tail still arriving: never moves on by itself
     nav.T = clamp(nav.T + e.deltaY*segPx()/NAV_PX, heroY(), maxScroll()); // and the distance scrolled carries further on top
     var L = landingFor(nav.A, nav.T, nav.dir, nav.count);
@@ -1487,14 +1491,15 @@ function onVS(e){
   }
   if (type === 'touchend'){
     lastInput = now;
-    if ((ev.touches && ev.touches.length) || crossing() || cutting) return false;
+    if ((ev.touches && ev.touches.length) || cutting) return false;
+    if (crossing()){ if (tch.acc > 24 && lateEntrance(1)) nav.queued = true; return false; }
     var S = tch.samples, last = S[S.length - 1], j = S.length - 1;
     while (j > 0 && ev.timeStamp - S[j-1][0] <= 80) j--;
     var dts = (last[0] - S[j][0])/1000, v0 = dts > 0.008 ? (last[1] - S[j][1])/dts : 0;
     if (ev.timeStamp - last[0] > 100) v0 = 0; // the finger rested before lifting
     var y2 = curY(); lenis.scrollTo(y2, { immediate: true, force: true }); // the spring takes over from here, at the finger's speed
     var d = Math.abs(v0) > 250 ? (v0 > 0 ? 1 : -1) : (tch.acc > 24 ? 1 : tch.acc < -24 ? -1 : 0);
-    if (y2/maxScroll() < WORLD0 - 1e-4){ startCross(d > 0 ? IS0 : d < 0 ? 0 : (tch.A >= IS0 ? IS0 : 0)); return false; } // released inside the hall: finish the entrance or the rewind (a tiny touch goes back where it was)
+    if (inHall(y2)){ startCross(d > 0 ? IS0 : d < 0 ? 0 : (tch.A >= IS0 ? IS0 : 0)); return false; } // released inside the hall: finish the entrance or the rewind (a tiny touch goes back where it was)
     var A = tch.A < IS0 ? IS0 : tch.A, T = clamp(tgY(A) + (y2 - tch.y0) + v0*0.30, heroY(), maxScroll()), L = d === 0 ? A : landingFor(A, T, d, 1);
     if (d > 0) L = Math.max(L, Math.min(A + 1, lastIdx())); else if (d < 0) L = Math.min(L, Math.max(A - 1, IS0)); // always in the finger's direction
     nav.A = A; nav.T = tgY(L); nav.dir = d; nav.count = 1; navTo(L, v0);
@@ -1504,7 +1509,7 @@ function onVS(e){
 }
 addEventListener('touchstart', function(e){ fingers = e.touches.length; }, { passive: true });
 addEventListener('touchend', function(e){ fingers = e.touches.length; }, { passive: true });
-addEventListener('touchcancel', function(e){ fingers = e.touches.length; if (fingers || !lenis || crossing() || cutting) return; var y = curY(); if (y/maxScroll() < WORLD0 - 1e-4) startCross(tch.A >= IS0 ? IS0 : 0); else navTo(nav.active ? nav.L : nearestIdx(y)); }, { passive: true });
+addEventListener('touchcancel', function(e){ fingers = e.touches.length; if (fingers || !lenis || crossing() || cutting) return; var y = curY(); if (inHall(y)) startCross(tch.A >= IS0 ? IS0 : 0); else navTo(nav.active ? nav.L : nearestIdx(y)); }, { passive: true });
 addEventListener('keydown', function(e){
   var tgt = e.target, tag = tgt && tgt.tagName;
   if (e.defaultPrevented || e.altKey || e.metaKey || e.ctrlKey || tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || tag === 'BUTTON' || (tgt && tgt.isContentEditable)) return;
@@ -1530,7 +1535,7 @@ function nativeSnap(now){
   var gap = Math.abs(TG[ib] - TG[ia]), to = (ib !== ia && Math.abs(p - TG[ia]) > 0.10*gap) ? ib : ia;
   nat.s = [];
   if (Math.abs(tgY(to) - y) < 2) return;
-  if (TG[to] < WORLD0 - 1e-4 || (to === 0 && p < WORLD0)){ startCross(nat.dir > 0 ? IS0 : 0); return; }
+  if (TG[to] < WORLD0 - 1e-4 || (to === 0 && inHall(y))){ startCross(nat.dir > 0 ? IS0 : 0); return; }
   nav.A = ia < IS0 ? IS0 : ia; navTo(to, 0);
 }
 // A jump is a cut under a short veil, never a fast forward through the stops
