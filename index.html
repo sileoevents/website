@@ -519,6 +519,11 @@ function registerFade(group){
     (Array.isArray(o.material) ? o.material : [o.material]).forEach(function(m){
       if (m.userData.fadeReg) return; m.userData.fadeReg = true;
       if (m.uniforms && m.uniforms.uAlpha) m.userData.base = m.uniforms.uAlpha.value;
+      else if (!m.transparent && m.opacity >= 1 && !m.uniforms){ // a solid surface: stays solid and dissolves through a fixed fine pattern while it fades
+        var fu = { value: 1 }; m.userData.dither = fu;
+        m.onBeforeCompile = function(sh){ sh.uniforms.uFadeD = fu; sh.fragmentShader = sh.fragmentShader.replace('void main() {', 'uniform float uFadeD;\nvoid main() {\n  if (uFadeD < 0.999 && fract(52.9829189*fract(dot(gl_FragCoord.xy, vec2(0.06711056, 0.00583715)))) > uFadeD) discard;'); };
+        m.customProgramCacheKey = function(){ return 'fadeD'; };
+      }
       else { m.userData.base = m.opacity; m.transparent = true; }
       list.push(m);
     });
@@ -528,7 +533,7 @@ function registerFade(group){
 function applyFade(group, f){
   group.visible = f > 0.003;
   if (!group.visible) return;
-  group.userData.fadeList.forEach(function(m){ if (m.uniforms && m.uniforms.uAlpha) m.uniforms.uAlpha.value = m.userData.base*f; else m.opacity = m.userData.base*f; });
+  group.userData.fadeList.forEach(function(m){ if (m.userData.dither) m.userData.dither.value = f; else if (m.uniforms && m.uniforms.uAlpha) m.uniforms.uAlpha.value = m.userData.base*f; else m.opacity = m.userData.base*f; });
 }
 
 /* =========================================================
@@ -1459,8 +1464,8 @@ function onVS(e){
       // a distinct new swipe: the fingers push again after the last swipe's momentum has clearly died down (falls to a quarter of its peak, then
       // climbs back to 40% of it). Wobble inside one swipe never does this, and neither does a busy page holding events back.
       // A separate wheel click (one large step after 0.3 s of quiet) counts the same way.
-      var click = gapW > 300 && ad >= 48, onset = isPush(ad);
-      if (click || onset){ nav.count = Math.min((nav.count || 1) + 1, NAV_MAX); wReset(ad); } else wTrack(ad);
+      // a separate scroll (after a pause) or a fresh push inside the last one's momentum: one more stop
+      if (newScroll || isPush(ad)){ nav.count = Math.min((nav.count || 1) + 1, NAV_MAX); wReset(ad); } else wTrack(ad);
     } else wTrack(ad); // at rest, the same scroll's tail still arriving: never moves on by itself
     nav.T = clamp(nav.T + e.deltaY*segPx()/NAV_PX, heroY(), maxScroll()); // and the distance scrolled carries further on top
     var L = landingFor(nav.A, nav.T, nav.dir, nav.count);
